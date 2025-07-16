@@ -1,121 +1,113 @@
-"""
-이 파일은 PostgreSQL MEASURE 스키마 내 데이터베이스 테이블과 매핑되는
-SQLModel 기반 ORM 모델 정의를 포함합니다.
+import uuid
 
-- MeasData: 측정 데이터 저장용 테이블 매핑 (복합 PK: 측정 시각, 태그 ID, 데이터 타입, 태그 그룹)
-- MyNosqlTableCode: 태그 코드 및 메타데이터 관리용 테이블 매핑
-- MyNosqlTableDataFilter: 이상치 필터링용 데이터 저장 테이블 매핑
-- MyNosqlTable: JSONB 형식의 NoSQL 데이터 저장용 테이블 매핑
-
-각 클래스는 필드별 데이터 타입, PK, 제약 조건을 명확히 지정해
-애플리케이션에서 데이터베이스와 타입 안정성을 보장하며 연동 가능하도록 설계되었습니다.
-"""
-
-from typing import Optional, ClassVar, Dict
-from sqlmodel import SQLModel, Field
-from sqlalchemy import *  # type: ignore
-from datetime import datetime
-from sqlalchemy.dialects.postgresql import JSONB
+from pydantic import EmailStr
+from sqlmodel import Field, Relationship, SQLModel
 
 
-class MeasData(SQLModel, table=True):
-    __tablename__: ClassVar[str] = "meas_data"
-    __table_args__: ClassVar[Dict[str, str]] = {"schema": "MEASURE"}
-
-    meas_dtm: datetime = Field(
-        sa_column=Column(TIMESTAMP, primary_key=True), description="측정 시각"
-    )
-    tag_id: str = Field(
-        sa_column=Column(VARCHAR(100), primary_key=True), description="계측 태그 ID"
-    )
-    datatyp: str = Field(
-        sa_column=Column(VARCHAR(10), primary_key=True), description="데이터 타입"
-    )
-    tag_group: str = Field(
-        sa_column=Column(VARCHAR(100), primary_key=True), description="태그 그룹"
-    )
-    datavalue: Optional[float] = Field(
-        default=None,
-        sa_column=Column(Numeric(16, 4), nullable=True),
-        description="측정값",
-    )
-    datavalid: Optional[str] = Field(
-        default=None,
-        sa_column=Column(CHAR(1), nullable=True),
-        description="유효성 여부",
-    )
-    update_yn: Optional[str] = Field(
-        default=None, sa_column=Column(CHAR(1), nullable=True), description="갱신 여부"
-    )
+# Shared properties
+class UserBase(SQLModel):
+    email: EmailStr = Field(unique=True, index=True, max_length=255)
+    is_active: bool = True
+    is_superuser: bool = False
+    full_name: str | None = Field(default=None, max_length=255)
 
 
-class MyNosqlTableCode(SQLModel, table=True):
-    # Pylance 호환을 위해 ClassVar로 타입 명시
-    __tablename__: ClassVar[str] = "my_nosql_table_code"
-    __table_args__: ClassVar[Dict[str, str]] = {"schema": "MEASURE"}
-    id: Optional[int] = Field(
-        default=None,
-        primary_key=True,
-        sa_column_kwargs={
-            "server_default": text(
-                "nextval('\"MEASURE\".my_nosql_table_id_seq'::regclass)"
-            )
-        },
-    )
-    tag_id: Optional[str] = Field(default=None, max_length=100, description="db tag id")
-    tag_desc: Optional[str] = Field(
-        default=None, max_length=100, description="db tag 설명"
-    )
-    plc_id: Optional[str] = Field(default=None, max_length=100, description="plc id")
-    plc_desc: Optional[str] = Field(
-        default=None, max_length=100, description="plc 설명"
-    )
-    plc_addr: Optional[str] = Field(
-        default=None, max_length=100, description="plc 주소"
-    )
-    plc_panel: Optional[str] = Field(
-        default=None, max_length=100, description="plc 판넬"
-    )
-    group_id: Optional[int] = Field(
-        default=None, description="그룹 id (유입펌프장, 생물반응조 등등)"
-    )
-    need_filter: Optional[int] = Field(
-        default=None, description="이상치 제거 대상 여부"
-    )
+# Properties to receive via API on creation
+class UserCreate(UserBase):
+    password: str = Field(min_length=8, max_length=40)
 
 
-class MyNosqlTableDataFilter(SQLModel, table=True):
-    __tablename__: ClassVar[str] = "my_nosql_table_data_filter"
-    __table_args__: ClassVar[Dict[str, str]] = {"schema": "MEASURE"}
+class UserRegister(SQLModel):
+    email: EmailStr = Field(max_length=255)
+    password: str = Field(min_length=8, max_length=40)
+    full_name: str | None = Field(default=None, max_length=255)
 
-    id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(
-            Integer,
-            primary_key=False,
-            server_default=text(
-                "nextval('\"MEASURE\".my_nosql_table_data_filter_id_seq'::regclass)"
-            ),
-        ),
+
+# Properties to receive via API on update, all are optional
+class UserUpdate(UserBase):
+    email: EmailStr | None = Field(default=None, max_length=255)  # type: ignore
+    password: str | None = Field(default=None, min_length=8, max_length=40)
+
+
+class UserUpdateMe(SQLModel):
+    full_name: str | None = Field(default=None, max_length=255)
+    email: EmailStr | None = Field(default=None, max_length=255)
+
+
+class UpdatePassword(SQLModel):
+    current_password: str = Field(min_length=8, max_length=40)
+    new_password: str = Field(min_length=8, max_length=40)
+
+
+# Database model, database table inferred from class name
+class User(UserBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    hashed_password: str
+    items: list["Item"] = Relationship(back_populates="owner", cascade_delete=True)
+
+
+# Properties to return via API, id is always required
+class UserPublic(UserBase):
+    id: uuid.UUID
+
+
+class UsersPublic(SQLModel):
+    data: list[UserPublic]
+    count: int
+
+
+# Shared properties
+class ItemBase(SQLModel):
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=255)
+
+
+# Properties to receive on item creation
+class ItemCreate(ItemBase):
+    pass
+
+
+# Properties to receive on item update
+class ItemUpdate(ItemBase):
+    title: str | None = Field(default=None, min_length=1, max_length=255)  # type: ignore
+
+
+# Database model, database table inferred from class name
+class Item(ItemBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    owner_id: uuid.UUID = Field(
+        foreign_key="user.id", nullable=False, ondelete="CASCADE"
     )
-    data: Optional[dict] = Field(default=None, sa_column=Column(JSONB))
-    meas_dtm: datetime = Field(..., description="측정 시각")
-    group_id: int = Field(..., description="my_nosql_table_code의 id", primary_key=True)
+    owner: User | None = Relationship(back_populates="items")
 
 
-class MyNosqlTable(SQLModel, table=True):
-    __tablename__: ClassVar[str] = "my_nosql_table"
-    __table_args__: ClassVar[Dict[str, str]] = {"schema": "MEASURE"}
+# Properties to return via API, id is always required
+class ItemPublic(ItemBase):
+    id: uuid.UUID
+    owner_id: uuid.UUID
 
-    id: Optional[int] = Field(
-        default=None,
-        sa_column=Column(
-            Integer,
-            server_default=text(
-                "nextval('\"MEASURE\".my_nosql_table_id_seq'::regclass)"
-            ),
-        ),
-    )
-    data: Optional[dict] = Field(default=None, sa_column=Column(JSONB))
-    meas_dtm: datetime = Field(..., description="측정 시각", primary_key=True)
-    group_id: int = Field(..., description="my_nosql_table_code의 id", primary_key=True)
+
+class ItemsPublic(SQLModel):
+    data: list[ItemPublic]
+    count: int
+
+
+# Generic message
+class Message(SQLModel):
+    message: str
+
+
+# JSON payload containing access token
+class Token(SQLModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+# Contents of JWT token
+class TokenPayload(SQLModel):
+    sub: str | None = None
+
+
+class NewPassword(SQLModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=40)
